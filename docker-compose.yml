@@ -1,4 +1,4 @@
-﻿name: diplomatic-expression
+name: diplomatic-expression
 
 services:
   postgres:
@@ -117,7 +117,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 120s
 
   n8n-worker-1:
     image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
