@@ -1,4 +1,4 @@
-name: diplomatic-expression
+﻿name: diplomatic-expression
 
 services:
   postgres:
@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_POSTGRESDB_DATABASE:-n8n}
       POSTGRES_USER: ${DB_POSTGRESDB_USER:-n8n}
-      POSTGRES_PASSWORD: ${DB_POSTGRESDB_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${DB_POSTGRESDB_PASSWORD:?DB_POSTGRESDB_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,19 +16,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 15s
 
   redis:
     image: redis:7-alpine
     container_name: diplomatic-expression-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: >
+      redis-server
+      --appendonly yes
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: >
+        redis-cli
+        ${REDIS_PASSWORD:+-a ${REDIS_PASSWORD}}
+        --no-auth-warning ping
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 5s
 
   pgvector:
     image: pgvector/pgvector:pg16
@@ -37,7 +45,7 @@ services:
     environment:
       POSTGRES_DB: ${PGVECTOR_DB:-vector}
       POSTGRES_USER: ${PGVECTOR_USER:-vector}
-      POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD:-change-me-too}
+      POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD:?PGVECTOR_PASSWORD must be set}
     volumes:
       - pgvector_data:/var/lib/postgresql/data
     healthcheck:
@@ -45,6 +53,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 15s
 
   n8n:
     image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
@@ -65,29 +74,32 @@ services:
       DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_DATABASE: ${DB_POSTGRESDB_DATABASE:-n8n}
       DB_POSTGRESDB_USER: ${DB_POSTGRESDB_USER:-n8n}
-      DB_POSTGRESDB_PASSWORD: ${DB_POSTGRESDB_PASSWORD:-change-me}
-
+      DB_POSTGRESDB_PASSWORD: ${DB_POSTGRESDB_PASSWORD}
       EXECUTIONS_MODE: ${EXECUTIONS_MODE:-queue}
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
-
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_JWT_SECRET: ${N8N_JWT_SECRET}
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: ${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS:-true}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY must be set}
+      N8N_JWT_SECRET: ${N8N_JWT_SECRET:?N8N_JWT_SECRET must be set}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-true}
+      N8N_BLOCK_ENV_ACCESS: ${N8N_BLOCK_ENV_ACCESS:-true}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: ${N8N_BLOCK_ENV_ACCESS_IN_NODE:-true}
+      N8N_BLOCK_ENV_VARS_FROM_EXPRESSIONS: ${N8N_BLOCK_ENV_VARS_FROM_EXPRESSIONS:-true}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://localhost:5678}
       WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678}
       N8N_HOST: ${N8N_HOST:-localhost}
       N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
       N8N_PORT: ${N8N_PORT:-5678}
       N8N_LISTEN_ADDRESS: ${N8N_LISTEN_ADDRESS:-0.0.0.0}
-      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
-      OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: ${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS:-true}
-      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-true}
-      N8N_BLOCK_ENV_ACCESS: ${N8N_BLOCK_ENV_ACCESS:-true}
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: ${N8N_BLOCK_ENV_ACCESS_IN_NODE:-true}
-      N8N_BLOCK_ENV_VARS_FROM_EXPRESSIONS: ${N8N_BLOCK_ENV_VARS_FROM_EXPRESSIONS:-true}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Dubai}
-
-      # Local replicas of the Railway variables. Keep them in the new setup.
+      PGVECTOR_DB: ${PGVECTOR_DB:-vector}
+      PGVECTOR_HOST: pgvector
+      PGVECTOR_PORT: ${PGVECTOR_PORT:-5432}
+      PGVECTOR_USER: ${PGVECTOR_USER:-vector}
+      PGVECTOR_PASSWORD: ${PGVECTOR_PASSWORD}
+      MCP_SERVER_URL: http://mcp-server:3000
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
@@ -100,14 +112,12 @@ services:
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
       SUPABASE_URL: ${SUPABASE_URL:-}
-
-      PGVECTOR_DB: ${PGVECTOR_DB:-vector}
-      PGVECTOR_HOST: pgvector
-      PGVECTOR_PASSWORD: ${PGVECTOR_PASSWORD:-change-me-too}
-      PGVECTOR_PORT: ${PGVECTOR_PORT:-5432}
-      PGVECTOR_USER: ${PGVECTOR_USER:-vector}
-
-      MCP_SERVER_URL: http://mcp-server:3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   n8n-worker-1:
     image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
@@ -144,7 +154,7 @@ services:
     restart: unless-stopped
     depends_on:
       n8n:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
