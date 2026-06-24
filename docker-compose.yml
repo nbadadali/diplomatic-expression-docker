@@ -16,7 +16,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 30s
 
   redis:
     image: redis:7-alpine
@@ -53,7 +53,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 30s
 
   n8n:
     image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
