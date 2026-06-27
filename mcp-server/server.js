@@ -8,6 +8,11 @@ const N8N_BASE_URL = process.env.N8N_BASE_URL || "http://n8n:5678";
 const N8N_API_KEY = process.env.N8N_API_KEY || "";
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 
+if (!AUTH_TOKEN || /^(choose-a-|change-me|replace-with-)/i.test(AUTH_TOKEN)) {
+  console.error("MCP_AUTH_TOKEN must be configured with a non-placeholder secret");
+  process.exit(1);
+}
+
 function jsonResponse(text) {
   try {
     return text ? JSON.parse(text) : {};
@@ -64,7 +69,6 @@ function createServer() {
       nodes,
       connections,
       settings: settings ?? {},
-      staticData: null,
     });
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   });
@@ -77,8 +81,13 @@ function createServer() {
     settings: z.record(z.any()).optional(),
   }, async ({ id, ...updates }) => {
     const current = await n8nRequest("GET", `/workflows/${id}`);
-    const merged = { ...current, ...updates };
-    const data = await n8nRequest("PUT", `/workflows/${id}`, merged);
+    const payload = {
+      name: updates.name ?? current.name,
+      nodes: updates.nodes ?? current.nodes,
+      connections: updates.connections ?? current.connections,
+      settings: updates.settings ?? current.settings ?? {},
+    };
+    const data = await n8nRequest("PUT", `/workflows/${id}`, payload);
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   });
 
@@ -125,10 +134,35 @@ function createServer() {
 
 const app = express();
 const transports = new Map();
+const asyncRoute = (handler) => (req, res, next) => {
+  Promise.resolve(handler(req, res, next)).catch(next);
+};
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, service: "diplomatic-expression-mcp" });
 });
+
+app.get("/ready", asyncRoute(async (_req, res) => {
+  if (!N8N_API_KEY) {
+    return res.status(503).json({
+      ok: false,
+      status: "configuration_required",
+      reason: "N8N_API_KEY is not configured",
+    });
+  }
+
+  try {
+    await n8nRequest("GET", "/workflows?limit=1");
+    return res.json({ ok: true, status: "ready" });
+  } catch (error) {
+    console.error("MCP readiness check failed:", error);
+    return res.status(503).json({
+      ok: false,
+      status: "n8n_unavailable",
+      reason: "n8n API is unavailable or rejected the configured API key",
+    });
+  }
+}));
 
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
@@ -139,7 +173,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/sse", async (req, res) => {
+app.get("/sse", asyncRoute(async (req, res) => {
   const transport = new SSEServerTransport("/messages", res);
   transports.set(transport.sessionId, transport);
 
@@ -148,9 +182,9 @@ app.get("/sse", async (req, res) => {
   });
 
   await createServer().connect(transport);
-});
+}));
 
-app.post("/messages", express.json(), async (req, res) => {
+app.post("/messages", express.json(), asyncRoute(async (req, res) => {
   const sessionId = String(req.query.sessionId || "");
   const transport = transports.get(sessionId);
   if (!transport) {
@@ -158,6 +192,12 @@ app.post("/messages", express.json(), async (req, res) => {
   }
 
   await transport.handlePostMessage(req, res, req.body);
+}));
+
+app.use((error, _req, res, next) => {
+  console.error("MCP request failed:", error);
+  if (res.headersSent) return next(error);
+  return res.status(500).json({ error: "Internal server error" });
 });
 
 app.listen(PORT, () => {

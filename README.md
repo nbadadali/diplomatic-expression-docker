@@ -1,118 +1,107 @@
 # diplomatic-expression-docker
 
-Clean-room Docker Desktop recreation of the Railway stack behind `diplomatic-expression`.
+Docker Compose application stack consumed by
+[`saai-zero-touch`](https://github.com/nbadadali/saai-zero-touch).
 
-## What this repo contains
+The supported deployment target is Docker Engine inside WSL2 Ubuntu 22.04.
+Docker Desktop is not required.
 
-- `n8n` main app
-- `n8n-worker-1` and `n8n-worker-2`
-- `postgres` for the n8n database
-- `redis` for queue mode
-- `pgvector` for vector storage
-- `mcp-server` for the n8n MCP API bridge
+## Services
 
-## What I preserved from the Railway layout
+- `postgres`: n8n application database
+- `redis`: n8n queue broker
+- `pgvector`: vector database
+- `n8n`: main UI, API, webhooks, and database migrations
+- `n8n-worker-1` and `n8n-worker-2`: queued execution workers
+- `mcp-server`: authenticated MCP bridge to the n8n public API
 
-- Queue-based n8n execution
-- Separate Postgres and Redis services
-- Separate pgvector service
-- Separate MCP server service
-- Environment variable names that match the Railway setup where practical
+All services use named volumes and `restart: unless-stopped`. The workers depend
+on a healthy main n8n service, so a fresh database is migrated by the main
+process before either worker starts.
 
-## What I intentionally did not carry over
+## Recommended installation
 
-- No Railway settings
-- No data migration
-- No existing repo modifications
-- No dependence on your current Railway deployment
+Do not configure this repository manually for a standard SAAI laptop. Run the
+host and WSL installers from `saai-zero-touch`:
 
-## Architecture summary
+1. Run `windows-setup.ps1 -WslDistro Ubuntu-22.04 -EnableBrowser` as Windows
+   Administrator.
+2. Open Ubuntu 22.04.
+3. Configure and run `saai-zero-touch/deploy.sh`.
 
-This is a fresh local deployment, not a sync of the Railway project.
+The deployment script clones this repository, generates persistent secrets,
+creates `.env`, starts n8n in migration-safe stages, and installs autostart.
 
-- `n8n` is the main workflow app
-- `postgres` stores n8n data
-- `redis` powers queue mode
-- `pgvector` is kept as a separate service to mirror the Railway shape
-- `n8n-worker-1` and `n8n-worker-2` process queued jobs
-- `mcp-server` exposes a small API bridge into n8n
+## Local endpoints
 
-The setup is meant to be easy to run on Docker Desktop with no Railway account involved.
+- n8n: `http://localhost:5678`
+- MCP liveness: `http://localhost:3000/health`
+- MCP readiness: `http://localhost:3000/ready`
+- MCP SSE transport: `http://localhost:3000/sse`
 
-## Prerequisites
+Published ports bind to `127.0.0.1` by default. Set
+`HOST_BIND_ADDRESS=0.0.0.0` only when remote network access is intentional and
+protected by an appropriate firewall and authentication policy.
 
-- Docker Desktop installed
-- A local `.env` file based on `.env.example`
-- An n8n API key for the MCP server
+## First-run MCP configuration
 
-## First-time setup
+The MCP container can start before an n8n API key exists. In that state:
 
-1. Copy the example env file:
+- `/health` returns success because the MCP process is alive.
+- `/ready` returns HTTP 503 with `configuration_required`.
+- MCP tool calls cannot access n8n.
+
+After creating the n8n owner account:
+
+1. In n8n, open **Settings -> API** and create an API key.
+2. Put the key in `saai-zero-touch/config.env` as `N8N_API_KEY="..."`.
+3. Run:
+
+```bash
+cd ~/saai-deploy
+./deploy.sh --only env_file
+cd ~/diplomatic-expression-docker
+docker compose up -d --force-recreate mcp-server
+curl -fsS http://127.0.0.1:3000/ready
+```
+
+## Manual development startup
+
+For development outside `saai-zero-touch`:
 
 ```bash
 cp .env.example .env
+# Replace every placeholder secret in .env before starting.
+docker compose config
+docker compose up -d --build
+docker compose ps
 ```
 
-2. Fill in the secrets in `.env`.
+The normal Compose dependency graph is migration-safe. The staged startup in
+`deploy.sh` adds diagnostics and recovery behavior for unattended deployment.
 
-3. Start the stack:
+## Version policy
+
+`N8N_IMAGE_TAG` defaults to the tested `2.28.0` release. Production deployments
+should pin an explicitly tested version in `.env`; do not use `latest`.
+
+The MCP image installs dependencies from `package-lock.json` using `npm ci`.
+Update and test the lock file intentionally when upgrading dependencies.
+
+## Useful commands
 
 ```bash
-docker compose up -d --build
+docker compose ps
+docker compose logs --tail 120 n8n
+docker compose logs --tail 120 n8n-worker-1 n8n-worker-2
+docker compose logs --tail 120 mcp-server
+curl -fsS http://127.0.0.1:5678/healthz/readiness
+curl -fsS http://127.0.0.1:3000/health
+curl -fsS http://127.0.0.1:3000/ready
 ```
 
-Then open:
+For the complete deployment health check, run:
 
-- n8n: `http://localhost:5678`
-- MCP server health: `http://localhost:3000/health`
-- MCP SSE endpoint: `http://localhost:3000/sse`
-
-## What your friend must change
-
-- `N8N_ENCRYPTION_KEY` should be a fresh random value for the new setup
-- `N8N_JWT_SECRET` should also be unique
-- `DB_POSTGRESDB_PASSWORD` and `PGVECTOR_PASSWORD` should not be left as placeholders
-- `MCP_AUTH_TOKEN` should be treated like a private shared secret between the MCP server and n8n
-- `N8N_API_KEY` must match the API key configured in the n8n instance
-
-## Optional integrations
-
-Leave these empty unless the workflows actually use them:
-
-- Google OAuth
-- OpenAI
-- Perplexity
-- Pinecone
-- Supabase
-
-## Quick validation
-
-After the stack starts, check:
-
-- `docker compose ps`
-- `http://localhost:5678` for n8n
-- `http://localhost:3000/health` for the MCP server
-
-If n8n does not start cleanly, the first things to check are the `.env` secrets and whether Docker Desktop has enough memory allocated.
-
-## Notes for your friend
-
-- Change `N8N_ENCRYPTION_KEY` to a fresh secret for the new setup.
-- Keep `WEBHOOK_URL` and `N8N_EDITOR_BASE_URL` pointed at the local machine unless you later move behind a reverse proxy.
-- Fill the external integration keys only if the workflows need them.
-- The project will run without Railway, but the workflows and credentials are still n8n data that must be configured inside the new instance.
-
-## MCP server
-
-The MCP server in this repo is a fresh implementation that exposes the same basic workflow operations:
-
-- list workflows
-- get workflow
-- create workflow
-- update workflow
-- activate / deactivate workflow
-- delete workflow
-- list executions
-- get execution
-
-It talks to n8n using `N8N_BASE_URL` and `N8N_API_KEY`.
+```bash
+bash ~/saai-deploy/healthcheck.sh
+```

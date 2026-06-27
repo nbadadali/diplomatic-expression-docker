@@ -1,197 +1,109 @@
 # n8n Stack Sanity Guide
 
-Use this after a restart or when you want to confirm the stack is healthy.
+Use the platform health check first:
 
-## 1. Check the host first
+```bash
+bash ~/saai-deploy/healthcheck.sh
+```
 
-These checks tell you whether WSL2 itself is healthy before you blame n8n.
+## Host checks
 
 ```bash
 uptime
 free -h
 df -h /
+systemctl is-active docker
+systemctl --user is-active openclaw-gateway
 ```
 
-Good signs:
-
-- load average is not stuck high for a long time
-- there is still a reasonable amount of `MemAvailable`
-- the root filesystem is not close to full
-
-If you want a deeper host check, look for kernel memory pressure:
-
-```bash
-journalctl -k --since '12 hours ago' | grep -Ei 'page allocation failure|out of memory|killed process|oom'
-```
-
-If that prints nothing, WSL2 did not hit an obvious memory crisis recently.
-
-## 2. Check containers
+## Container checks
 
 ```bash
 cd ~/diplomatic-expression-docker
 docker compose ps
 ```
 
-Expected:
+Expected after startup:
 
-- `postgres`, `redis`, and `pgvector` should be `healthy`
-- `n8n`, `n8n-worker-1`, `n8n-worker-2`, and `mcp-server` should be `Up`
+- `postgres`, `redis`, `pgvector`, `n8n`, both workers, and `mcp-server` are
+  running and healthy.
+- n8n logs show the editor is accessible.
+- worker logs show the workers are ready.
 
-## 3. Check service logs
-
-Primary n8n:
-
-```bash
-docker compose logs --tail 60 n8n
-```
-
-Workers:
+## Endpoint checks
 
 ```bash
-docker compose logs --tail 60 n8n-worker-1
-docker compose logs --tail 60 n8n-worker-2
+curl -fsS http://127.0.0.1:5678/healthz/readiness
+curl -fsS http://127.0.0.1:3000/health
+curl -i http://127.0.0.1:3000/ready
 ```
 
-Redis:
+`/health` tests only whether the MCP process is alive. Before the first n8n API
+key is configured, `/ready` intentionally returns HTTP 503 with
+`configuration_required`. After the key is configured it must return HTTP 200.
+
+## Logs
 
 ```bash
-docker compose logs --tail 60 redis
+docker compose logs --tail 120 n8n
+docker compose logs --tail 120 n8n-worker-1 n8n-worker-2
+docker compose logs --tail 120 postgres redis pgvector
+docker compose logs --tail 120 mcp-server
 ```
 
-Postgres:
+Investigate repeated occurrences of:
 
-```bash
-docker compose logs --tail 60 postgres
-```
+- `constraint already exists` during migrations
+- `EAI_AGAIN`, database connection failures, or Redis connection failures
+- container restart loops
+- `out of memory`, `OOM`, or killed processes
+- MCP authentication or n8n API-key rejection errors
 
-Healthy signs to look for:
+## Recovery
 
-- n8n should finish migrations and print `Editor is now accessible via: http://localhost:5678`
-- workers should print `n8n worker is now ready`
-- Redis should print `Ready to accept connections`
-- Postgres should print `database system is ready to accept connections`
-- a few warnings are acceptable if they are not repeated constantly
-- the main things to watch for are `timeout`, `failed`, `EAI_AGAIN`, and `OOM`
-
-## 4. Check the web UI
-
-Open:
-
-- `http://localhost:5678`
-
-If the page loads, n8n is reachable.
-
-## 5. Check the MCP server
-
-```bash
-curl -fsS http://localhost:3000/health
-```
-
-Expected response:
-
-```json
-{"ok":true}
-```
-
-## 6. Test a workflow webhook
-
-If you created a webhook workflow at `/webhook/test`, verify it with:
-
-```bash
-curl -i -m 30 http://localhost:5678/webhook/test
-```
-
-If the workflow is configured for `GET`, the response should be `200 OK`.
-
-If you see a `POST` error, the webhook is probably not configured for `POST`.
-
-## 7. Confirm execution logs
-
-After calling the webhook, check:
-
-```bash
-docker compose logs --tail 80 n8n | grep -E 'Execution [0-9]+|Enqueued execution'
-docker compose logs --tail 80 n8n-worker-1 | grep -E 'Worker started execution|Worker finished execution'
-docker compose logs --tail 80 n8n-worker-2 | grep -E 'Worker started execution|Worker finished execution'
-```
-
-What you want to see:
-
-- the main n8n container enqueues an execution
-- one of the workers starts and finishes that execution
-- the workflow output appears in the n8n execution history in the UI
-
-## 8. 24x7 watchdog checklist
-
-Run this when you want a quick daily sanity pass:
+The Compose dependency graph starts workers only after the main n8n service is
+healthy. Normal recovery is therefore:
 
 ```bash
 cd ~/diplomatic-expression-docker
-uptime
-free -h
-docker compose ps
-docker compose logs --tail 50 n8n | grep -Ei 'timeout|failed|EAI_AGAIN|recovered|Execution|Enqueued'
-docker compose logs --tail 50 n8n-worker-1 | grep -Ei 'Worker started execution|Worker finished execution|timeout|failed'
-docker compose logs --tail 50 n8n-worker-2 | grep -Ei 'Worker started execution|Worker finished execution|timeout|failed'
-docker compose logs --tail 50 postgres | grep -Ei 'ready to accept connections|checkpoint|fatal|panic|error'
-docker compose logs --tail 50 redis | grep -Ei 'Ready to accept connections|error|warning'
-journalctl -k --since '12 hours ago' | grep -Ei 'page allocation failure|out of memory|killed process|oom'
+docker compose up -d
 ```
 
-What is normal:
-
-- occasional startup warnings
-- a checkpoint every so often in Postgres logs
-- one-off `Database connection recovered` messages if the host was briefly busy
-
-What is not normal:
-
-- repeated `page allocation failure` lines in the kernel log
-- repeated `getaddrinfo EAI_AGAIN postgres`
-- containers restarting
-- swap staying nearly full for long periods
-
-## 9. Recommended WSL2 tuning
-
-If you want the easiest stability win, add a Windows-side file at `%UserProfile%\\.wslconfig` with something like this:
-
-```ini
-[wsl2]
-memory=6GB
-swap=4GB
-localhostForwarding=true
-pageReporting=true
-autoMemoryReclaim=gradual
-```
-
-Then run `wsl --shutdown` from Windows and start WSL again so the new limits apply.
-
-## 10. If something is off
-
-- If a container is missing, run `docker compose up -d`
-- If n8n is not reachable, check `docker compose logs --tail 120 n8n`
-- If workers show `Command "n8n" not found`, make sure the compose file uses `command: ["worker"]`
-- If the webhook hangs, make sure the workflow is active and the HTTP method matches the webhook trigger
-- If WSL2 is showing memory pressure, raise the `memory` and `swap` values in `.wslconfig`
-
-## 11. Windows logon autostart
-
-I also added a helper script:
+For an unsuccessful deployment, use the phase named in the error output. For
+example:
 
 ```bash
-/home/nishant/diplomatic-expression-docker/scripts/wsl-autostart.sh
+cd ~/saai-deploy
+./deploy.sh --from stack
 ```
 
-Windows autostart is wired through the user Startup folder:
+Do not delete named volumes unless permanent data loss is intended.
 
-- `%LOCALAPPDATA%\OpenClaw\wsl-autostart.cmd`
-- `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\OpenClaw-n8n-autostart.cmd`
+## Autostart
 
-That launcher calls the WSL helper through `wsl.exe`. If you want to check it manually after login, run:
+Linux autostart is owned by `saai-zero-touch/deploy.sh`:
+
+- `openclaw-gateway.service`: OpenClaw gateway user service
+- `n8n-stack.service`: Compose stack user service
+- `~/.local/bin/saai-autostart.sh`: path-independent stack launcher
+- `~/.saai-repo-path`: current application repository location
+
+Windows only wakes WSL after logon through the
+`OpenClaw-Stack-DelayedStart` Scheduled Task. Browser automation is restored by
+the separate `OpenClaw-CDP-Autostart` task.
+
+Check autostart with:
 
 ```bash
-docker compose -f ~/diplomatic-expression-docker/docker-compose.yml ps
+systemctl --user status n8n-stack.service
+journalctl --user -u n8n-stack.service --no-pager -n 100
+tail -n 100 ~/wsl-autostart.log
 ```
 
-If the task works, the stack should be up a short time after you sign in to Windows.
+On Windows PowerShell:
+
+```powershell
+Get-ScheduledTask -TaskName 'OpenClaw-*'
+Get-Content "$env:LOCALAPPDATA\OpenClaw\openclaw-stack.log" -Tail 100
+Get-Content "$env:LOCALAPPDATA\OpenClaw\openclaw-cdp.log" -Tail 100
+```

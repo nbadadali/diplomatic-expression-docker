@@ -56,11 +56,11 @@ services:
       start_period: 30s
 
   n8n:
-    image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
+    image: n8nio/n8n:${N8N_IMAGE_TAG:-2.28.0}
     container_name: diplomatic-expression-n8n
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:5678:5678"
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,18 +113,20 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
       SUPABASE_URL: ${SUPABASE_URL:-}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 120s
 
   n8n-worker-1:
-    image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
+    image: n8nio/n8n:${N8N_IMAGE_TAG:-2.28.0}
     container_name: diplomatic-expression-n8n-worker-1
     restart: unless-stopped
     command: ["worker"]
     depends_on:
+      n8n:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -132,13 +134,22 @@ services:
     environment:
       <<: *n8n-env
       N8N_PORT: 5678
+      QUEUE_HEALTH_CHECK_ACTIVE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   n8n-worker-2:
-    image: n8nio/n8n:${N8N_IMAGE_TAG:-latest}
+    image: n8nio/n8n:${N8N_IMAGE_TAG:-2.28.0}
     container_name: diplomatic-expression-n8n-worker-2
     restart: unless-stopped
     command: ["worker"]
     depends_on:
+      n8n:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -146,6 +157,13 @@ services:
     environment:
       <<: *n8n-env
       N8N_PORT: 5678
+      QUEUE_HEALTH_CHECK_ACTIVE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   mcp-server:
     build:
@@ -156,12 +174,18 @@ services:
       n8n:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     environment:
       PORT: 3000
       N8N_BASE_URL: ${N8N_BASE_URL:-http://n8n:5678}
       N8N_API_KEY: ${N8N_API_KEY:-}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
 volumes:
   postgres_data:
